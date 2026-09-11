@@ -1,0 +1,34 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Log files (directory is tracked via logs/.gitkeep)
+logs/*.log
+logs/*.log.*
+
+# Local environment — contains secrets, never commit
+.env
+
+# Model artifacts
+artifacts/models/*.pt
+artifacts/models/*.pth
+artifacts/models/*.onnx
+artifacts/models/*.engine
+
+# Runtime data
+data/
+evidence/
+uploads/
+tmp/
+
+# Test/cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

@@ -1,0 +1,263 @@
+# BH_CV Compliance Detector — runtime configuration
+
+stream:
+  # "video" for pre-recorded files, "rtsp" for live camera
+  type: video
+  camera_id: "handwash-camera-01"
+
+  video:
+    path: "data/videos"
+    playback_mode: realtime   # only supported mode; sleeps to match native FPS
+    loop: false
+
+  rtsp:
+    # Credentials must be in the environment, not hard-coded here.
+    # Set RTSP_URL=rtsp://user:pass@192.168.1.100/stream before running.
+    url: "${RTSP_URL}"
+
+  reconnect:
+    initial_delay_seconds: 1.0
+    max_delay_seconds: 15.0
+
+  sampling:
+    # No person detected → lower inference rate to save CPU.
+    # Person present → higher rate for responsive compliance tracking.
+    no_person_fps: 5.0
+    person_fps: 10.0
+
+  buffer:
+    max_size: 1
+    strategy: latest
+
+# ── Model definitions ────────────────────────────────────────────────────────
+# All models are grouped under the handwashing use-case.
+# person and sink are supporting detectors; handwashing is the primary detector.
+models:
+  handwashing:
+    use_case: handwashing
+    device: cpu
+    image_size: 640
+
+    person:
+      path: "artifacts/models/yolo11n.pt"
+      confidence: 0.25            # PERSON_CONFIDENCE
+      presence_confidence: 0.25
+      tracker: "bytetrack.yaml"
+
+    sink:
+      path: "artifacts/models/sink_detection.pt"
+      confidence: 0.50            # SINK_CONFIDENCE
+      presence_confidence: 0.50
+
+    hand:
+      path: "artifacts/models/handwash_detection.pt"
+      confidence: 0.50            # HAND_CONFIDENCE: washing threshold → hands_interacting=True
+      presence_confidence: 0.25   # presence threshold: detect anyone near the sink (even if not washing)
+
+
+# ── Zone → model mapping ─────────────────────────────────────────────────────
+# Zones are logical regions within a camera's view.
+# One camera may have multiple zones; each zone may use different models.
+zones:
+  handwash_zone:
+    models:
+      - handwashing.person
+      - handwashing.sink
+      - handwashing.hand
+
+# ── Camera → zone mapping ────────────────────────────────────────────────────
+cameras:
+  handwash-camera-01:
+    zones:
+      - handwash_zone
+
+# ── Inference worker settings ────────────────────────────────────────────────
+inference:
+  queue_size: 10      # max FrameEnvelopes buffered before drop-oldest kicks in
+  workers: 1          # CPU inference workers (1 is safe for single YOLO model)
+  warmup: true        # run one synthetic forward pass after model load
+
+  thumbnail:
+    enabled: true
+    max_width: 320    # pixels; aspect ratio is preserved
+    jpeg_quality: 70  # JPEG quality in [1, 100]
+    draw_bboxes: true # draw bounding boxes and labels on evidence thumbnails
+
+# ── Compliance rule engine ────────────────────────────────────────────────────
+compliance:
+  trigger_class: "hand_washing"   # YOLO class name that indicates active washing
+  washing_confidence: 0.5         # minimum detection confidence to treat as active washing
+
+  handwash:
+    # Minimum cumulative WASHING state time for a compliant handwash.
+    minimum_washing_duration_seconds: 20.0   # MIN_WASHING_DURATION
+    # How long a person can be at the sink without washing before a violation
+    # is confirmed.
+    absence_threshold_seconds: 10.0
+    # Sequence / content requirements (all false for basic MVP).
+    require_soap: false
+    require_water: false
+    require_sequence: false
+    require_completion: false
+    # Maximum thumbnails buffered per violation episode (ring-buffer policy).
+    evidence_buffer_max: 10
+    # Maximum seconds allowed between consecutive observations before temporal
+    # continuity is considered broken (e.g. camera drop, network outage).
+    max_gap_seconds: 5.0
+
+  # ── Person / Hand / Sink association ──────────────────────────────────────
+  association:
+    # A hand belongs to a person if the hand center falls inside the expanded
+    # person bounding box.
+    person_box_expand_x: 0.15       # PERSON_BOX_EXPAND_X
+    person_box_expand_y: 0.20       # PERSON_BOX_EXPAND_Y
+    # A person is assigned to a sink by the closest sink to the person's
+    # lower-center point. Distance is relative to sink size.
+    max_person_sink_distance: 2.0   # MAX_PERSON_SINK_DISTANCE
+    # Hand-to-sink spatial margins (relative to sink dimensions).
+    sink_horizontal_margin: 0.30    # SINK_HORIZONTAL_MARGIN
+    sink_top_margin: 1.50           # SINK_TOP_MARGIN
+    sink_bottom_margin: 0.20        # SINK_BOTTOM_MARGIN
+
+  # ── Washing decision ──────────────────────────────────────────────────────
+  washing:
+    # Minimum number of hands associated with a person + sink to count as washing.
+    min_hands: 1                            # MIN_HANDS_FOR_WASHING
+    # Consecutive positive frames before declaring a washing event.
+    confirmation_frames: 5                  # DETECTION_CONFIRMATION_FRAMES
+    # Seconds without evidence before the event resets.
+    reset_after_no_detection_seconds: 1.0   # RESET_AFTER_NO_DETECTION_SECONDS
+    # Rolling window for hand movement history.
+    movement_history_size: 12               # MOVEMENT_HISTORY_SIZE
+    # Minimum average hand movement (pixels/frame) to count as active washing.
+    min_hand_movement: 2.0                  # MIN_HAND_MOVEMENT
+    # When true, step-model detections raise confidence that washing is genuine.
+    use_step_model_as_support: true         # USE_STEP_MODEL_AS_SUPPORT
+    # Hand movement is a required condition (not optional supporting evidence).
+    require_hand_movement: true             # REQUIRE_HAND_MOVEMENT
+
+# ── State store ───────────────────────────────────────────────────────────────
+state_store:
+  backend: redis
+  key_prefix: "cv:state"
+  ttl_seconds: 3600
+
+# ── Message topics ────────────────────────────────────────────────────────────
+topics:
+  detection_events: inference.detections
+  compliance_alert: compliance.alert
+  evidence_capture: evidence.capture
+
+# ── Runtime backend selection ─────────────────────────────────────────────────
+# Controls which infrastructure implementations are used.
+# "memory" uses in-process implementations (default, zero dependencies).
+# "redis"  uses Redis-backed implementations (requires a running Redis server).
+runtime:
+  message_queue_backend: redis    # memory | redis
+  frame_store_backend: redis      # memory | redis
+
+# ── Redis configuration ───────────────────────────────────────────────────────
+# Only used when runtime.*_backend = redis.
+redis:
+  enabled: true
+  url: "${REDIS_URL}"
+  socket_timeout_seconds: 10.0         # must exceed worker block timeout (1s) with headroom
+  socket_connect_timeout_seconds: 5.0
+  health_check_interval_seconds: 30
+
+  streams:
+    # Stream names in Redis — change per environment if needed.
+    frame_ingested: "cv:frame:ingested"
+    detection_created: "cv:detection:created"
+    compliance_alert: "cv:compliance:alert"
+    evidence_capture: "cv:evidence:capture"
+    # MAXLEN ~ limits stream growth; approximate trim is faster.
+    # Exact (MAXLEN without ~) is slower but precise.
+    max_length: 10000
+    approximate_trim: true
+
+  frame_store:
+    ttl_seconds: 30        # How long frame bytes live in Redis before expiry.
+    key_prefix: "cv:frame" # Key structure: {key_prefix}:{camera_id}:{frame_id}
+
+  consumer:
+    pending_idle_timeout_ms: 60000   # Claim messages pending longer than this.
+    recovery_interval_seconds: 10    # How often to run XAUTOCLAIM recovery.
+
+# ── Debug frame saving ───────────────────────────────────────────────────────
+# Saves raw, sampled, and detected frames to data/result/{session_id}/.
+# max_frames: cap per subfolder (raw/sample/detected). 0 = disabled.
+debug:
+  frame_saving:
+    max_frames: 0
+  video_saving:
+    enabled: true
+    # Fallback FPS used only when the source FPS cannot be determined.
+    # Normally the output video uses the source video's native FPS so that
+    # playback speed is preserved.
+    fallback_fps: 5.0
+    # Output filename inside data/result/{session_id}/.
+    filename: "detected.avi"
+
+# ── Evidence storage ─────────────────────────────────────────────────────────
+evidence:
+  output_dir: "evidence"
+
+# ── PostgreSQL persistence ────────────────────────────────────────────────────
+database:
+  enabled: true
+  # Build URL from individual vars: postgresql+psycopg2://USER:PASS@HOST:PORT/DB
+  # Note: if password contains special chars (e.g. @), use POSTGRES_PASSWORD env var
+  # and the DATABASE_URL will be constructed from components in code.
+  # Set DATABASE_URL directly OR set the individual POSTGRES_* vars below.
+  url: "${DATABASE_URL}"
+  pool:
+    min_size: 2
+    max_size: 10
+  timeout_seconds: 10
+
+# ── Persistence configuration (controls what gets written to PostgreSQL) ───────
+persistence:
+  enabled: true
+
+  detections:
+    enabled: true
+    batch_size: 100
+    flush_interval_seconds: 1.0
+
+  observations:
+    enabled: true
+    batch_size: 100
+    flush_interval_seconds: 1.0
+
+  frame_metadata:
+    enabled: false   # high-frequency; disabled by default
+
+  state_transitions:
+    enabled: true
+
+  temporal_metrics:
+    enabled: true
+
+  compliance_evaluations:
+    enabled: true
+
+  violations:
+    enabled: true
+
+  evidence:
+    enabled: true
+
+  audit:
+    enabled: true
+
+# ── Retention policies (days; 0 = keep forever) ───────────────────────────────
+retention:
+  frame_metadata_days: 7
+  detections_days: 30
+  observations_days: 30
+  temporal_metrics_days: 90
+  compliance_evaluations_days: 90
+  violations_days: 365
+  evidence_metadata_days: 365
+  audit_logs_days: 730

@@ -1,0 +1,47 @@
+[project]
+name = "bh-cv"
+version = "0.1.0"
+description = "Computer-vision compliance monitoring for a meat-processing warehouse"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "opencv-python-headless>=4.9",
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "streamlit>=1.35",
+    "structlog>=24.1",
+    "python-dotenv>=1.0",
+    # NOTE: ultralytics ships under AGPL-3.0.
+    # Commercial/closed-source use requires an Enterprise License.
+    # See https://www.ultralytics.com/license
+    "ultralytics>=8.2",
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
+    "alembic>=1.13",
+    "redis[hiredis]>=5.0",
+    "python-docx>=1.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-mock>=3.14",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend", "config"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest-asyncio>=1.4.0",
+]
