@@ -100,7 +100,12 @@ compliance:
     require_sequence: false
     require_completion: false
     # Maximum thumbnails buffered per violation episode (ring-buffer policy).
-    evidence_buffer_max: 10
+    evidence_buffer_max: 30
+    # After a person exits the sink zone, wait this many seconds before
+    # finalising the violation.  If they return within this window the episode
+    # continues (same group_id + evidence buffer) so tracker flicker does not
+    # create multiple separate violation clips for one real visit.
+    session_cooldown_seconds: 10.0
     # Maximum seconds allowed between consecutive observations before temporal
     # continuity is considered broken (e.g. camera drop, network outage).
     max_gap_seconds: 5.0
@@ -189,7 +194,7 @@ redis:
 # max_frames: cap per subfolder (raw/sample/detected). 0 = disabled.
 debug:
   frame_saving:
-    max_frames: 0
+    max_frames: 10
   video_saving:
     enabled: true
     # Fallback FPS used only when the source FPS cannot be determined.

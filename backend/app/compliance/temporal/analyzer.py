@@ -73,6 +73,9 @@ def initial_person_state(person_id: int, timestamp: datetime) -> dict:
         "hand_movement_score":        0.0,
         # Milestone tracking — last logged 5-second washing milestone (int).
         "washing_duration_logged":    0,
+        # Session cooldown: ISO timestamp when the person last exited the sink
+        # zone, or None if not in a pending-exit window.
+        "pending_exit_at":            None,
     }
 
 

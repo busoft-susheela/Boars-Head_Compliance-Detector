@@ -285,7 +285,9 @@ class PersistenceWorker:
                 evidence_item_repo.save_batch(items_to_save)
 
                 # ── Compile evidence video clip ──────────────────────────────
-                self._create_evidence_clip(list(evidence.payload.items), group_dir)
+                self._create_evidence_clip(
+                    list(evidence.payload.items), group_dir, alert=alert
+                )
 
             # ── Persist Notification (DASHBOARD channel) ─────────────────────
             notification = Notification(
@@ -346,8 +348,9 @@ class PersistenceWorker:
         items: list,
         group_dir: Path,
         fps: float = 2.0,
+        alert: ComplianceEvent | None = None,
     ) -> None:
-        """Decode evidence thumbnails, stamp each frame with its timestamp, and write clip.avi."""
+        """Decode evidence thumbnails, overlay violation details in red, and write clip.avi."""
         try:
             frames: list[np.ndarray] = []
             timestamps: list[datetime] = []
@@ -373,13 +376,45 @@ class PersistenceWorker:
                 logger.error("evidence_clip_writer_failed", path=str(clip_path))
                 return
 
+            # Pre-build violation overlay lines (static across all frames).
+            RED   = (0, 0, 255)
+            BLACK = (0, 0, 0)
+            WHITE = (255, 255, 255)
+            if alert is not None:
+                confirmed_str = alert.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+                overlay_lines = [
+                    ("⚠ VIOLATION: NOT WASHED",          0.65, RED,   2),
+                    (f"Person ID : {alert.person_id}",   0.55, RED,   1),
+                    (f"Camera    : {alert.camera_id}",   0.50, RED,   1),
+                    (f"Zone      : {alert.zone_id}",     0.50, RED,   1),
+                    (f"Confirmed : {confirmed_str}",     0.45, RED,   1),
+                    (f"Group     : {alert.group_id}",    0.38, RED,   1),
+                ]
+            else:
+                overlay_lines = []
+
             for frame, ts in zip(frames, timestamps):
                 if frame.shape[:2] != (h, w):
                     frame = cv2.resize(frame, (w, h))
+
+                # ── Violation details — top-left, red ─────────────────────────
+                y = 22
+                for text, scale, colour, thickness in overlay_lines:
+                    line_h = int(scale * 28)
+                    # Black shadow for readability on any background
+                    cv2.putText(frame, text, (8, y), cv2.FONT_HERSHEY_SIMPLEX,
+                                scale, BLACK, thickness + 1)
+                    cv2.putText(frame, text, (8, y), cv2.FONT_HERSHEY_SIMPLEX,
+                                scale, colour, thickness)
+                    y += line_h + 4
+
+                # ── Frame timestamp — bottom-left, white ──────────────────────
                 ts_str = ts.strftime("%Y-%m-%d %H:%M:%S UTC")
-                # Draw shadow then white text for readability on any background
-                cv2.putText(frame, ts_str, (8, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 2)
-                cv2.putText(frame, ts_str, (8, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                cv2.putText(frame, ts_str, (8, h - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, BLACK, 2)
+                cv2.putText(frame, ts_str, (8, h - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, WHITE, 1)
+
                 writer.write(frame)
 
             writer.release()

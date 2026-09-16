@@ -88,6 +88,11 @@ class HandwashRuleEvaluator(RuleEvaluator):
         self._config = config
         self._buffers: dict[tuple[str, str, int], EvidenceBuffer] = {}
 
+    def has_active_session(self, camera_id: str, zone_id: str, person_id: int) -> bool:
+        """True if a live (non-frozen) evidence buffer exists for this person."""
+        buf = self._buffers.get((camera_id, zone_id, person_id))
+        return buf is not None and not buf.frozen
+
     def evaluate(
         self,
         person_state: dict,
@@ -98,6 +103,8 @@ class HandwashRuleEvaluator(RuleEvaluator):
         thumbnail: bytes | None,
         frame_id: int,
         source_fps: float = 0.0,
+        detections: tuple = (),
+        frame_shape: tuple = (0, 0),
     ) -> RuleEvaluationResult:
         """Apply the handwash rule for one frame observation.
 
@@ -116,7 +123,7 @@ class HandwashRuleEvaluator(RuleEvaluator):
                 timestamp, frame_id, metrics, source_fps,
             )
 
-        # ── Person is actively washing → discard any unconfirmed group ───────
+        # ── Person is actively washing → keep evidence buffer open, add frame ──
         if current_state == HandwashState.WASHING:
             # Log every 5-second washing milestone (matches reference script behaviour).
             milestone = int(metrics.washing_duration // 5) * 5
@@ -131,14 +138,17 @@ class HandwashRuleEvaluator(RuleEvaluator):
                     state=HandwashState.WASHING.name,
                     extra=f"Current duration: {metrics.washing_duration:.2f}s",
                 )
-            self._handle_washing_active(state, buf_key)
+            self._handle_washing_active(
+                state, buf_key, camera_id, zone_id, person_id,
+                timestamp, thumbnail, frame_id, detections, frame_shape,
+            )
             return RuleEvaluationResult(person_state=state, outcome=None, evidence=None)
 
         # ── Person at sink but not washing → build/continue absence group ────
         if current_state == HandwashState.NEAR_SINK_NOT_WASHING:
             return self._handle_near_sink_not_washing(
                 state, buf_key, camera_id, zone_id, person_id,
-                timestamp, thumbnail, frame_id, source_fps,
+                timestamp, thumbnail, frame_id, source_fps, detections, frame_shape,
             )
 
         # ── Terminal states (WASHED / NOT_WASHED) — idempotent ───────────────
@@ -160,7 +170,19 @@ class HandwashRuleEvaluator(RuleEvaluator):
         metrics: TemporalMetrics,
         source_fps: float = 0.0,
     ) -> RuleEvaluationResult:
-        """Person exited the sink zone."""
+        """Person exited the sink zone.
+
+        Session cooldown
+        ----------------
+        Rather than confirming a violation on the very first frame the person
+        is absent, we open a cooldown window (``session_cooldown_seconds``).
+        During that window the episode stays alive: if the person returns they
+        continue the *same* group_id / evidence buffer.  Only once the person
+        has been absent for the full cooldown is the outcome finalised.
+
+        This prevents tracker flicker (brief 1-3 s detection gaps) from
+        splitting one sink visit into multiple separate violation clips.
+        """
         if state.get("violation_confirmed", False):
             # Already confirmed in a previous frame — stay idempotent.
             state["consecutive_absence_frames"] = 0
@@ -169,16 +191,42 @@ class HandwashRuleEvaluator(RuleEvaluator):
         group_id = state.get("group_id")
 
         if group_id is None:
-            # No active evidence group.
-            # This happens when the buffer was discarded while the person was actively
-            # washing (WASHING state) — they exited without transitioning back to
-            # NEAR_SINK_NOT_WASHING first.  We must still evaluate washing duration
-            # so the visit doesn't silently disappear with no verdict.
+            # No active evidence group — person exited before any sink entry was
+            # debounce-confirmed.  Still evaluate washing duration so the visit
+            # doesn't silently disappear with no verdict.
             if metrics.washing_duration == 0.0 and metrics.at_sink_duration == 0.0:
                 # Person never approached the sink — nothing to evaluate.
                 _reset_visit(state)
                 return RuleEvaluationResult(person_state=state, outcome=None, evidence=None)
             # Fall through to evaluate accumulated washing_seconds (no evidence buffer).
+
+        else:
+            # Active session: apply session cooldown before finalising.
+            pending_exit_at_str = state.get("pending_exit_at")
+            if pending_exit_at_str is None:
+                # First exit frame: open the cooldown window and wait.
+                state["pending_exit_at"] = _fmt(timestamp)
+                return RuleEvaluationResult(person_state=state, outcome=None, evidence=None)
+
+            elapsed = (timestamp - _parse(pending_exit_at_str)).total_seconds()
+
+            # Guard: negative elapsed means pending_exit_at is a future timestamp
+            # (stale Redis value from a different video segment or run).  Discard
+            # the stale episode cleanly rather than waiting forever.
+            if elapsed < 0:
+                state["pending_exit_at"] = None
+                state["group_id"] = None
+                state["absence_started_at"] = None
+                self._buffers.pop(buf_key, None)
+                _reset_visit(state)
+                return RuleEvaluationResult(person_state=state, outcome=None, evidence=None)
+
+            if elapsed < self._config.session_cooldown_seconds:
+                # Still within cooldown — person may return; do not confirm yet.
+                return RuleEvaluationResult(person_state=state, outcome=None, evidence=None)
+
+            # Cooldown expired — finalise the session outcome below.
+            state["pending_exit_at"] = None
 
         washing_seconds = metrics.washing_duration
         min_duration = self._config.minimum_washing_duration_seconds
@@ -280,11 +328,57 @@ class HandwashRuleEvaluator(RuleEvaluator):
         _reset_visit(state)
         return result
 
-    def _handle_washing_active(self, state: dict, buf_key: tuple) -> None:
-        """Person is confirmed washing — discard any unconfirmed absence group."""
-        if state.get("group_id") and not state.get("violation_confirmed", False):
-            self._discard_buffer(buf_key, state, reason="washing_resumed")
+    def _handle_washing_active(
+        self,
+        state: dict,
+        buf_key: tuple,
+        camera_id: str,
+        zone_id: str,
+        person_id: int,
+        timestamp: datetime,
+        thumbnail: bytes | None,
+        frame_id: int,
+        detections: tuple = (),
+        frame_shape: tuple = (0, 0),
+    ) -> None:
+        """Person is confirmed washing — keep evidence buffer open and add frame.
+
+        The buffer opened on first sink entry stays alive through WASHING so
+        that the full visit (not-washing + washing frames) is captured for any
+        eventual violation.  It is only discarded on a compliant exit.
+        """
+        # Session continuation via WASHING: person resumed washing after a brief
+        # exit — clear the pending cooldown so the session stays alive.
+        if state.get("pending_exit_at") is not None:
+            state["pending_exit_at"] = None
+
         state["consecutive_absence_frames"] = 0
+
+        # Open a buffer on first entry if the person was tracked directly into
+        # WASHING without passing through NEAR_SINK_NOT_WASHING first.
+        if not state.get("group_id"):
+            group_id = str(uuid.uuid4())
+            state["group_id"] = group_id
+            state["absence_started_at"] = _fmt(timestamp)
+            self._buffers[buf_key] = EvidenceBuffer(
+                max_items=self._config.evidence_buffer_max,
+                group_id=group_id,
+                camera_id=camera_id,
+                zone_id=zone_id,
+            )
+
+        buf = self._buffers.get(buf_key)
+        if buf is not None and not buf.frozen:
+            buf.add(EvidenceItem(
+                frame_id=frame_id,
+                timestamp=timestamp,
+                thumbnail=thumbnail,
+                camera_id=camera_id,
+                zone_id=zone_id,
+                person_id=person_id,
+                detections=detections,
+                frame_shape=frame_shape,
+            ))
 
     def _handle_near_sink_not_washing(
         self,
@@ -297,10 +391,35 @@ class HandwashRuleEvaluator(RuleEvaluator):
         thumbnail: bytes | None,
         frame_id: int,
         source_fps: float = 0.0,
+        detections: tuple = (),
+        frame_shape: tuple = (0, 0),
     ) -> RuleEvaluationResult:
         """Person is at the sink but not confirmed washing — build evidence group."""
         if state.get("violation_confirmed", False):
             return RuleEvaluationResult(person_state=state, outcome=None, evidence=None)
+
+        # Session continuation: person returned within the cooldown window.
+        # Skip debounce — continue the existing session (same group_id + buffer).
+        if state.get("pending_exit_at") is not None:
+            buf = self._buffers.get(buf_key)
+            if buf is not None and not buf.frozen:
+                # Valid in-memory buffer — true session continuation.
+                state["pending_exit_at"] = None
+                state["consecutive_absence_frames"] = 0
+                buf.add(EvidenceItem(
+                    frame_id=frame_id, timestamp=timestamp, thumbnail=thumbnail,
+                    camera_id=camera_id, zone_id=zone_id, person_id=person_id,
+                    detections=detections, frame_shape=frame_shape,
+                ))
+                return RuleEvaluationResult(person_state=state, outcome=None, evidence=None)
+            else:
+                # No live buffer — pending_exit_at is stale (e.g., from Redis
+                # across a restart).  Discard the stale group and fall through to
+                # the normal debounce path so a fresh group can be opened.
+                state["pending_exit_at"] = None
+                state["group_id"] = None
+                state["absence_started_at"] = None
+                state["violation_confirmed"] = False
 
         # Debounce: wait for a few consecutive sink-entry frames before opening a group.
         if not state.get("group_id"):
@@ -423,3 +542,10 @@ def _fmt(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.isoformat()
+
+
+def _parse(ts: str) -> datetime:
+    dt = datetime.fromisoformat(ts)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt

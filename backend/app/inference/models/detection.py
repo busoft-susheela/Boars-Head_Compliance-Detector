@@ -87,3 +87,4 @@ class DetectionEvent:
     thumbnail: bytes | None
     correlation_id: str = ""
     source_fps: float = 0.0   # native FPS of the source video; propagated from FrameEnvelope
+    frame_shape: tuple[int, int] = (0, 0)  # (height, width) of the original frame in pixels

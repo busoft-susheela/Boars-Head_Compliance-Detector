@@ -85,9 +85,14 @@ from backend.app.infrastructure.state_store.base import StateStore, make_state_k
 
 logger = structlog.get_logger(__name__)
 
-# After this many consecutive frames without seeing a person, synthesise an
-# absence observation.  Must match (or be less than) IoUTracker.max_lost_frames.
+# Frame-count fallback for synthetic zone-exit when source_fps is unavailable.
 _MAX_LOST_FRAMES = 5
+
+# Seconds without a real detection before a synthetic observation treats the
+# person as having left the zone.  Must match ObservationBuilder's
+# reset_after_no_detection_seconds (default 1.0 s) so that the two code paths
+# use the same effective window and don't disagree about zone membership.
+_ZONE_EXIT_GRACE_SECONDS = 1.0
 
 # Stale person state is evicted from the ObservationBuilder after this many
 # seconds without any detection (mirrors reference script's source_fps * 3).
@@ -275,7 +280,14 @@ class ComplianceRuleEngine:
                 HandwashState.WASHED,
                 HandwashState.NOT_WASHED,
             ):
-                continue  # already at a resting state — no synthetic obs needed
+                # NOT_NEAR_SINK persons with a pending session exit still need
+                # processing so the session cooldown can tick and the violation
+                # can eventually be confirmed.
+                if not (
+                    current_hs == HandwashState.NOT_NEAR_SINK
+                    and p_state.get("pending_exit_at")
+                ):
+                    continue  # true resting state — no synthetic obs needed
 
             last_frame = p_state.get("last_frame_id", frame_id - 1)
             frames_lost = frame_id - last_frame
@@ -292,7 +304,13 @@ class ComplianceRuleEngine:
                 )
                 continue
 
-            inside_zone = frames_lost <= _MAX_LOST_FRAMES
+            # Use time-based threshold (matching ObservationBuilder grace period)
+            # so both code paths agree on when a person has left the zone.
+            # Fall back to frame count when source_fps is unavailable.
+            if source_fps > 0:
+                inside_zone = (frames_lost / source_fps) <= _ZONE_EXIT_GRACE_SECONDS
+            else:
+                inside_zone = frames_lost <= _MAX_LOST_FRAMES
             logger.info(
                 "absence_observation_synthesized",
                 action=(
@@ -352,9 +370,20 @@ class ComplianceRuleEngine:
             # "entered_sink_area" fires regardless — it is the definitive signal
             # that a new visit has begun (NOT_NEAR_SINK → NEAR_SINK_NOT_WASHING).
             if transition.reason in ("new_visit_after_terminal", "entered_sink_area"):
-                last_frame_id = person_state.get("last_frame_id", -1)
-                person_state = initial_person_state(person_id, timestamp)
-                person_state["last_frame_id"] = last_frame_id
+                # A session continuation is valid only when (a) there is a
+                # pending_exit_at timestamp AND (b) the evaluator has an active
+                # in-memory buffer for this person.  Condition (b) rules out
+                # stale Redis state from a previous process restart: that state
+                # has pending_exit_at set but no corresponding in-memory buffer,
+                # so we reset cleanly instead of carrying over stale metrics.
+                is_session_continuation = (
+                    bool(person_state.get("pending_exit_at"))
+                    and self._evaluator.has_active_session(camera_id, zone_id, person_id)
+                )
+                if not is_session_continuation:
+                    last_frame_id = person_state.get("last_frame_id", -1)
+                    person_state = initial_person_state(person_id, timestamp)
+                    person_state["last_frame_id"] = last_frame_id
 
             vt = video_time_str(frame_id, source_fps)
             if transition.transitioned:
@@ -418,6 +447,8 @@ class ComplianceRuleEngine:
                 thumbnail=evidence_thumbnail,
                 frame_id=frame_id,
                 source_fps=source_fps,
+                detections=event.detections,
+                frame_shape=event.frame_shape,
             )
 
             zone_state["persons"][str(person_id)] = result.person_state

@@ -58,7 +58,7 @@ def _build_engine(
     if rule_evaluator is None:
         rule_evaluator = MagicMock()
         rule_evaluator.evaluate.return_value = RuleEvaluationResult(
-            person_state={"person_id": 7, "current_state": "AT_SINK"},
+            person_state={"person_id": 7, "current_state": "NEAR_SINK_NOT_WASHING"},
             outcome=None,
             evidence=None,
         )
@@ -106,8 +106,8 @@ class TestComplianceRuleEngine:
         engine, store, mq, metrics = _build_engine()
         engine._test_obs_builder.build.return_value = [obs]
         engine._test_state_machine.transition.return_value = StateTransitionResult(
-            previous_state=HandwashState.UNKNOWN,
-            new_state=HandwashState.AT_SINK,
+            previous_state=HandwashState.NOT_NEAR_SINK,
+            new_state=HandwashState.NEAR_SINK_NOT_WASHING,
             timestamp=_T0,
             person_id=7,
             transitioned=True,
@@ -115,11 +115,11 @@ class TestComplianceRuleEngine:
             reason="test",
         )
         engine._test_temporal.update_and_analyze.return_value = (
-            {"person_id": 7, "current_state": "AT_SINK"},
-            TemporalMetrics(0, 0, 0, 0, 0, True, True, 1, "AT_SINK", 0.0),
+            {"person_id": 7, "current_state": "NEAR_SINK_NOT_WASHING"},
+            TemporalMetrics(0, 0, 0, 0, 0, True, True, 1, "NEAR_SINK_NOT_WASHING", 0.0),
         )
         engine._test_rule_evaluator.evaluate.return_value = RuleEvaluationResult(
-            person_state={"person_id": 7, "current_state": "AT_SINK"},
+            person_state={"person_id": 7, "current_state": "NEAR_SINK_NOT_WASHING"},
             outcome=None,
             evidence=None,
         )
@@ -147,16 +147,16 @@ class TestComplianceRuleEngine:
         engine, store, mq, metrics = _build_engine()
         engine._test_obs_builder.build.return_value = [obs]
         engine._test_state_machine.transition.return_value = StateTransitionResult(
-            previous_state=HandwashState.UNKNOWN, new_state=HandwashState.AT_SINK,
+            previous_state=HandwashState.NOT_NEAR_SINK, new_state=HandwashState.NEAR_SINK_NOT_WASHING,
             timestamp=_T0, person_id=7, transitioned=True,
             sequence_valid=True, reason="test",
         )
         engine._test_temporal.update_and_analyze.return_value = (
-            {"person_id": 7, "current_state": "AT_SINK"},
-            TemporalMetrics(0, 0, 0, 0, 0, True, True, 1, "AT_SINK", 0.0),
+            {"person_id": 7, "current_state": "NEAR_SINK_NOT_WASHING"},
+            TemporalMetrics(0, 0, 0, 0, 0, True, True, 1, "NEAR_SINK_NOT_WASHING", 0.0),
         )
         engine._test_rule_evaluator.evaluate.return_value = RuleEvaluationResult(
-            person_state={"person_id": 7, "current_state": "AT_SINK"},
+            person_state={"person_id": 7, "current_state": "NEAR_SINK_NOT_WASHING"},
             outcome=None,
             evidence=None,
         )
@@ -188,18 +188,18 @@ class TestComplianceRuleEngine:
         engine, store, mq, metrics = _build_engine()
         engine._test_obs_builder.build.return_value = [obs]
         engine._test_state_machine.transition.return_value = StateTransitionResult(
-            previous_state=HandwashState.AT_SINK, new_state=HandwashState.AT_SINK,
+            previous_state=HandwashState.NEAR_SINK_NOT_WASHING, new_state=HandwashState.NEAR_SINK_NOT_WASHING,
             timestamp=_T0, person_id=7, transitioned=False,
             sequence_valid=True, reason="test",
         )
         engine._test_temporal.update_and_analyze.return_value = (
-            {"person_id": 7, "current_state": "AT_SINK",
+            {"person_id": 7, "current_state": "NEAR_SINK_NOT_WASHING",
              "group_id": "g-001", "violation_confirmed": True},
-            TemporalMetrics(0, 0, 0, 0, 0, True, True, 1, "AT_SINK", 0.0),
+            TemporalMetrics(0, 0, 0, 0, 0, True, True, 1, "NEAR_SINK_NOT_WASHING", 0.0),
         )
         engine._test_rule_evaluator.evaluate.return_value = RuleEvaluationResult(
             person_state={
-                "person_id": 7, "current_state": "AT_SINK",
+                "person_id": 7, "current_state": "NEAR_SINK_NOT_WASHING",
                 "group_id": "g-001", "violation_confirmed": True,
             },
             outcome="violation",

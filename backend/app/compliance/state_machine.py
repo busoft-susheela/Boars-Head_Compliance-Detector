@@ -149,9 +149,16 @@ class HandwashStateMachine:
     ) -> tuple[HandwashState, str]:
         """Core transition table."""
 
-        # ── Terminal states reset to NOT_NEAR_SINK on next detection ─────────
+        # ── Terminal states reset only once the person leaves the sink ──────
+        # Stay in the terminal state while the person is still at the sink so
+        # that the engine does not open a new violation cycle for the same
+        # physical visit.  The reset to NOT_NEAR_SINK fires only when they
+        # actually leave (inside_sink_zone=False), after which a genuine
+        # re-entry will trigger entered_sink_area for the next visit.
         if state in (HandwashState.WASHED, HandwashState.NOT_WASHED):
-            return HandwashState.NOT_NEAR_SINK, "new_visit_after_terminal"
+            if not obs.inside_sink_zone:
+                return HandwashState.NOT_NEAR_SINK, "new_visit_after_terminal"
+            return state, "terminal_waiting_exit"
 
         # ── Person exits sink area → reset to NOT_NEAR_SINK ──────────────────
         # inside_sink_zone=False means the hand has been away from the sink

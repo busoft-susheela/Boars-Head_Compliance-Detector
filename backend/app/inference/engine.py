@@ -274,6 +274,7 @@ class YoloInferenceEngine:
             thumbnail=thumbnail,
             correlation_id=envelope.correlation_id,
             source_fps=envelope.source_fps,
+            frame_shape=(int(frame.shape[0]), int(frame.shape[1])),
         )
         self._message_queue.publish(self._output_topic, event)
 
@@ -350,7 +351,8 @@ class YoloInferenceEngine:
             for det in detections:
                 b = det.bbox
                 x1, y1, x2, y2 = int(b.x1), int(b.y1), int(b.x2), int(b.y2)
-                label = f"{det.class_name} {det.confidence:.2f}"
+                pid = f" ID:{det.track_id}" if det.track_id is not None else ""
+                label = f"{det.class_name}{pid} {det.confidence:.2f}"
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(
                     annotated, label, (x1, max(y1 - 6, 0)),
@@ -375,7 +377,8 @@ class YoloInferenceEngine:
             for det in detections:
                 b = det.bbox
                 x1, y1, x2, y2 = int(b.x1), int(b.y1), int(b.x2), int(b.y2)
-                label = f"{det.class_name} {det.confidence:.2f}"
+                pid = f" ID:{det.track_id}" if det.track_id is not None else ""
+                label = f"{det.class_name}{pid} {det.confidence:.2f}"
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(
                     annotated, label, (x1, max(y1 - 6, 0)),

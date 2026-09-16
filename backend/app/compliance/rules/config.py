@@ -85,6 +85,12 @@ class HandwashRuleConfig:
     sink_top_margin: float
     sink_bottom_margin: float
 
+    # ── Session cooldown (defaulted — must follow all required fields) ─────
+    # Seconds a person must be absent before their visit episode is finalised.
+    # Prevents tracker flicker (brief detection gaps) from creating multiple
+    # separate violation clips for what is really one continuous sink visit.
+    session_cooldown_seconds: float = 10.0
+
     def __post_init__(self) -> None:
         if self.minimum_washing_duration_seconds <= 0:
             raise ValueError(
@@ -120,6 +126,9 @@ class HandwashRuleConfig:
                 hw.get("absence_threshold_seconds", 5.0)
             ),
             evidence_buffer_max=int(hw.get("evidence_buffer_max", 10)),
+            session_cooldown_seconds=float(
+                hw.get("session_cooldown_seconds", 10.0)
+            ),
 
             # Temporal confirmation (compliance.washing.*)
             confirmation_frames=int(

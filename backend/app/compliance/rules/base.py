@@ -50,6 +50,17 @@ class RuleEvaluator(ABC):
     own persistence or message publishing.
     """
 
+    def has_active_session(self, camera_id: str, zone_id: str, person_id: int) -> bool:
+        """Return True if an active (non-frozen) in-memory evidence buffer exists.
+
+        The engine calls this before deciding whether to treat a new sink entry
+        as a session continuation or a fresh visit.  A buffer only exists if the
+        current process opened it — stale Redis state from a previous run will
+        not have a corresponding buffer, so this correctly returns False and the
+        engine resets the state.
+        """
+        return False  # default: no in-memory session
+
     @abstractmethod
     def evaluate(
         self,
@@ -61,6 +72,8 @@ class RuleEvaluator(ABC):
         thumbnail: bytes | None,
         frame_id: int,
         source_fps: float = 0.0,
+        detections: tuple = (),
+        frame_shape: tuple = (0, 0),
     ) -> RuleEvaluationResult:
         """Apply the rule to the current state and metrics.
 
@@ -72,6 +85,8 @@ class RuleEvaluator(ABC):
             timestamp:    Frame capture time (datetime).
             thumbnail:    JPEG evidence bytes; None if unavailable.
             frame_id:     Monotonic frame counter.
+            detections:   All Detection objects for this frame (original coords).
+            frame_shape:  (height, width) of the original source frame.
 
         Returns:
             :class:`RuleEvaluationResult` with updated state, optional

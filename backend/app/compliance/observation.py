@@ -162,6 +162,7 @@ class ObservationBuilder:
         require_hand_movement: bool = True,
         confirmation_frames: int = 3,
         reset_after_no_detection_seconds: float = 1.0,
+        washing_hold_frames: int = 5,
         movement_history_size: int = 12,
     ) -> None:
         self._person_class = person_class
@@ -178,6 +179,7 @@ class ObservationBuilder:
         self._require_movement = require_hand_movement
         self._confirm_frames = confirmation_frames
         self._reset_seconds = reset_after_no_detection_seconds
+        self._washing_hold_frames = washing_hold_frames
         self._movement_history_size = movement_history_size
 
         # Per-person tracking state (keyed by track_id / person_id).
@@ -340,8 +342,12 @@ class ObservationBuilder:
                 state["positive_frames"] += 1
                 state["no_detection_frames"] = 0
             else:
-                state["positive_frames"] = 0
                 state["no_detection_frames"] += 1
+                # Only drop positive_frames once the gap exceeds the hold
+                # window.  A single missed detection should not wipe out all
+                # accumulated confirmation frames and immediately exit WASHING.
+                if state["no_detection_frames"] >= self._washing_hold_frames:
+                    state["positive_frames"] = 0
 
             # ── Reset check (person left sink area) ─────────────────────────
             # If the hand has been away from the sink long enough, treat the

@@ -18,10 +18,7 @@ def _obs(**kwargs) -> Observation:
         timestamp=_T0,
         frame_id=1,
         inside_sink_zone=True,
-        water_detected=False,
-        soap_detected=False,
         hands_interacting=False,
-        track_bbox=None,
     )
     defaults.update(kwargs)
     return Observation(**defaults)
@@ -32,165 +29,97 @@ def sm():
     return HandwashStateMachine()
 
 
-# ── Person leaving zone always → UNKNOWN ─────────────────────────────────────
+# ── NOT_NEAR_SINK ─────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("state", list(HandwashState))
-def test_leaves_zone_resets_to_unknown(sm, state):
-    obs = _obs(inside_sink_zone=False)
-    result = sm.transition(state, obs)
-    assert result.new_state == HandwashState.UNKNOWN
-    assert result.reason == "left_zone"
-
-
-# ── UNKNOWN ───────────────────────────────────────────────────────────────────
-
-def test_unknown_person_detected_becomes_at_sink(sm):
-    obs = _obs()
-    result = sm.transition(HandwashState.UNKNOWN, obs)
-    assert result.new_state == HandwashState.AT_SINK
+def test_not_near_sink_enters_sink(sm):
+    result = sm.transition(HandwashState.NOT_NEAR_SINK, _obs(inside_sink_zone=True))
+    assert result.new_state == HandwashState.NEAR_SINK_NOT_WASHING
+    assert result.reason == "entered_sink_area"
     assert result.transitioned is True
 
 
-# ── AT_SINK ───────────────────────────────────────────────────────────────────
-
-def test_at_sink_water_detected_becomes_water_on(sm):
-    obs = _obs(water_detected=True)
-    result = sm.transition(HandwashState.AT_SINK, obs)
-    assert result.new_state == HandwashState.WATER_ON
-
-
-def test_at_sink_soap_detected_becomes_soap_applied(sm):
-    obs = _obs(soap_detected=True)
-    result = sm.transition(HandwashState.AT_SINK, obs)
-    assert result.new_state == HandwashState.SOAP_APPLIED
-
-
-def test_at_sink_hands_interacting_becomes_washing(sm):
-    obs = _obs(hands_interacting=True)
-    result = sm.transition(HandwashState.AT_SINK, obs)
-    assert result.new_state == HandwashState.WASHING
-
-
-def test_at_sink_no_activity_stays(sm):
-    obs = _obs()
-    result = sm.transition(HandwashState.AT_SINK, obs)
-    assert result.new_state == HandwashState.AT_SINK
+def test_not_near_sink_stays_when_not_at_sink(sm):
+    result = sm.transition(HandwashState.NOT_NEAR_SINK, _obs(inside_sink_zone=False))
+    assert result.new_state == HandwashState.NOT_NEAR_SINK
+    assert result.reason == "not_near_sink"
     assert result.transitioned is False
 
 
-# ── WATER_ON ─────────────────────────────────────────────────────────────────
+# ── NEAR_SINK_NOT_WASHING ─────────────────────────────────────────────────────
 
-def test_water_on_soap_becomes_soap_applied(sm):
-    obs = _obs(water_detected=True, soap_detected=True)
-    result = sm.transition(HandwashState.WATER_ON, obs)
-    assert result.new_state == HandwashState.SOAP_APPLIED
-
-
-def test_water_on_hands_interacting_becomes_washing(sm):
-    obs = _obs(water_detected=True, hands_interacting=True)
-    result = sm.transition(HandwashState.WATER_ON, obs)
+def test_near_sink_washing_confirmed(sm):
+    result = sm.transition(HandwashState.NEAR_SINK_NOT_WASHING, _obs(hands_interacting=True))
     assert result.new_state == HandwashState.WASHING
+    assert result.reason == "washing_confirmed"
+    assert result.transitioned is True
 
 
-def test_water_on_stays_when_only_water(sm):
-    obs = _obs(water_detected=True)
-    result = sm.transition(HandwashState.WATER_ON, obs)
-    assert result.new_state == HandwashState.WATER_ON
+def test_near_sink_stays_without_hands(sm):
+    result = sm.transition(HandwashState.NEAR_SINK_NOT_WASHING, _obs(hands_interacting=False))
+    assert result.new_state == HandwashState.NEAR_SINK_NOT_WASHING
+    assert result.reason == "near_sink_not_washing"
     assert result.transitioned is False
 
 
-# ── SOAP_APPLIED ─────────────────────────────────────────────────────────────
-
-def test_soap_applied_hands_interacting_becomes_washing(sm):
-    obs = _obs(soap_detected=True, hands_interacting=True)
-    result = sm.transition(HandwashState.SOAP_APPLIED, obs)
-    assert result.new_state == HandwashState.WASHING
-
-
-def test_soap_applied_stays_without_hands(sm):
-    obs = _obs(soap_detected=True)
-    result = sm.transition(HandwashState.SOAP_APPLIED, obs)
-    assert result.new_state == HandwashState.SOAP_APPLIED
-    assert result.transitioned is False
+def test_near_sink_exits_zone(sm):
+    result = sm.transition(HandwashState.NEAR_SINK_NOT_WASHING, _obs(inside_sink_zone=False))
+    assert result.new_state == HandwashState.NOT_NEAR_SINK
+    assert result.reason == "left_sink_area"
+    assert result.transitioned is True
 
 
 # ── WASHING ───────────────────────────────────────────────────────────────────
 
 def test_washing_stays_while_hands_interacting(sm):
-    obs = _obs(hands_interacting=True, water_detected=True)
-    result = sm.transition(HandwashState.WASHING, obs)
+    result = sm.transition(HandwashState.WASHING, _obs(hands_interacting=True))
     assert result.new_state == HandwashState.WASHING
+    assert result.reason == "still_washing"
     assert result.transitioned is False
 
 
-def test_washing_no_hands_becomes_rinsing(sm):
-    obs = _obs(hands_interacting=False, water_detected=False)
-    result = sm.transition(HandwashState.WASHING, obs)
-    assert result.new_state == HandwashState.RINSING
+def test_washing_stops_when_hands_stop(sm):
+    result = sm.transition(HandwashState.WASHING, _obs(hands_interacting=False))
+    assert result.new_state == HandwashState.NEAR_SINK_NOT_WASHING
+    assert result.reason == "washing_stopped"
+    assert result.transitioned is True
 
 
-def test_washing_no_hands_water_on_becomes_rinsing(sm):
-    obs = _obs(hands_interacting=False, water_detected=True)
-    result = sm.transition(HandwashState.WASHING, obs)
-    assert result.new_state == HandwashState.RINSING
+def test_washing_exits_zone(sm):
+    result = sm.transition(HandwashState.WASHING, _obs(inside_sink_zone=False))
+    assert result.new_state == HandwashState.NOT_NEAR_SINK
+    assert result.reason == "left_sink_area"
+    assert result.transitioned is True
 
 
-# ── RINSING ───────────────────────────────────────────────────────────────────
+# ── Terminal states (WASHED / NOT_WASHED) ────────────────────────────────────
 
-def test_rinsing_no_water_becomes_completed(sm):
-    obs = _obs(water_detected=False, hands_interacting=False)
-    result = sm.transition(HandwashState.RINSING, obs)
-    assert result.new_state == HandwashState.COMPLETED
-
-
-def test_rinsing_hands_interacting_back_to_washing(sm):
-    obs = _obs(hands_interacting=True)
-    result = sm.transition(HandwashState.RINSING, obs)
-    assert result.new_state == HandwashState.WASHING
-
-
-def test_rinsing_water_on_stays(sm):
-    obs = _obs(water_detected=True, hands_interacting=False)
-    result = sm.transition(HandwashState.RINSING, obs)
-    assert result.new_state == HandwashState.RINSING
-
-
-# ── COMPLETED ────────────────────────────────────────────────────────────────
-
-def test_completed_stays_completed(sm):
-    obs = _obs()
-    result = sm.transition(HandwashState.COMPLETED, obs)
-    assert result.new_state == HandwashState.COMPLETED
+@pytest.mark.parametrize("terminal", [HandwashState.WASHED, HandwashState.NOT_WASHED])
+def test_terminal_stays_while_still_at_sink(sm, terminal):
+    """No new cycle starts while the person is still physically at the sink."""
+    result = sm.transition(terminal, _obs(inside_sink_zone=True))
+    assert result.new_state == terminal
+    assert result.reason == "terminal_waiting_exit"
     assert result.transitioned is False
 
 
-# ── Sequence validation ───────────────────────────────────────────────────────
-
-def test_soap_before_water_flags_sequence_invalid(sm):
-    """Soap applied directly from AT_SINK without water → sequence_valid=False."""
-    obs = _obs(soap_detected=True, water_detected=False)
-    result = sm.transition(HandwashState.AT_SINK, obs)
-    assert result.new_state == HandwashState.SOAP_APPLIED
-    assert result.sequence_valid is False
-
-
-def test_soap_after_water_is_valid(sm):
-    obs = _obs(soap_detected=True, water_detected=True)
-    result = sm.transition(HandwashState.WATER_ON, obs)
-    assert result.sequence_valid is True
+@pytest.mark.parametrize("terminal", [HandwashState.WASHED, HandwashState.NOT_WASHED])
+def test_terminal_resets_when_person_leaves(sm, terminal):
+    """Reset to NOT_NEAR_SINK only once the person has physically left."""
+    result = sm.transition(terminal, _obs(inside_sink_zone=False))
+    assert result.new_state == HandwashState.NOT_NEAR_SINK
+    assert result.reason == "new_visit_after_terminal"
+    assert result.transitioned is True
 
 
 # ── StateTransitionResult metadata ───────────────────────────────────────────
 
 def test_result_carries_person_id_and_timestamp(sm):
-    obs = _obs(person_id=42, timestamp=_T0)
-    result = sm.transition(HandwashState.UNKNOWN, obs)
+    result = sm.transition(HandwashState.NOT_NEAR_SINK, _obs(person_id=42, timestamp=_T0))
     assert result.person_id == 42
     assert result.timestamp == _T0
 
 
 def test_result_previous_and_new_state(sm):
-    obs = _obs()
-    result = sm.transition(HandwashState.UNKNOWN, obs)
-    assert result.previous_state == HandwashState.UNKNOWN
-    assert result.new_state == HandwashState.AT_SINK
+    result = sm.transition(HandwashState.NOT_NEAR_SINK, _obs(inside_sink_zone=True))
+    assert result.previous_state == HandwashState.NOT_NEAR_SINK
+    assert result.new_state == HandwashState.NEAR_SINK_NOT_WASHING

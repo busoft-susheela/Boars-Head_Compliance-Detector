@@ -72,32 +72,33 @@ class ThumbnailGenerator:
             return self.generate(frame)
 
         try:
-            annotated = frame.copy()
-            h, w = annotated.shape[:2]
-            scale = min(1.0, self._max_width / w) if w > self._max_width else 1.0
+            # Resize first so bbox coordinates map correctly to thumbnail space.
+            # Drawing on the original frame and then resizing would scale the
+            # already-scaled coordinates a second time, placing boxes at the
+            # wrong position (proportional to scale²).
+            h_o, w_o = frame.shape[:2]
+            resized = self._resize(frame)
+            h_t, w_t = resized.shape[:2]
+            sx = w_t / w_o if w_o > 0 else 1.0
+            sy = h_t / h_o if h_o > 0 else 1.0
             for det in detections:
                 b = det.bbox
-                x1 = int(b.x1 * scale) if scale != 1.0 else int(b.x1)
-                y1 = int(b.y1 * scale) if scale != 1.0 else int(b.y1)
-                x2 = int(b.x2 * scale) if scale != 1.0 else int(b.x2)
-                y2 = int(b.y2 * scale) if scale != 1.0 else int(b.y2)
+                x1, y1 = int(b.x1 * sx), int(b.y1 * sy)
+                x2, y2 = int(b.x2 * sx), int(b.y2 * sy)
                 label = (
                     f"{det.class_name}:{det.track_id} {det.confidence:.2f}"
                     if det.track_id is not None
                     else f"{det.class_name} {det.confidence:.2f}"
                 )
-                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.rectangle(resized, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(
-                    annotated,
-                    label,
-                    (x1, max(y1 - 6, 0)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45,
-                    (0, 255, 0),
-                    1,
-                    cv2.LINE_AA,
+                    resized, label, (x1, max(y1 - 6, 0)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1, cv2.LINE_AA,
                 )
-            return self.generate(annotated)
+            ok, buf = cv2.imencode(
+                ".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality],
+            )
+            return buf.tobytes() if ok else self.generate(frame)
         except Exception as exc:
             logger.warning("thumbnail_annotate_error", error=str(exc))
             return self.generate(frame)
