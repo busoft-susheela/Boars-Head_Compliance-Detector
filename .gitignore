@@ -32,3 +32,10 @@ tmp/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Local utility scripts
+update_docs.py
+update_docs_v2.py
+update_docs_v3.py
+generate_docs.py
+BH_CV_Compliance_Detector_Documentation.docx
